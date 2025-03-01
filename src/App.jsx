@@ -116,16 +116,19 @@ function WordTimestamps({ chunks }) {
   );
 }
 
-// Audio recording logic
+// Audio recording logic with streaming support
 function useAudioRecorder() {
   const [isRecording, setIsRecording] = useState(false);
   const [logs, setLogs] = useState([]);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
+  const audioContextRef = useRef(null);
+  const streamingIntervalRef = useRef(null);
+  const processingChunkRef = useRef(false);
   
   const addLog = (message) => {
     // Only add important logs
-    if (message.includes('Recording') || message.includes('Transcription complete') || message.includes('Error')) {
+    if (message.includes('Recording') || message.includes('Transcription') || message.includes('Error')) {
       const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
       setLogs(prevLogs => [...prevLogs, { 
         id: Date.now() + '-' + Math.random().toString(36).substr(2, 9), 
@@ -135,19 +138,52 @@ function useAudioRecorder() {
     }
   };
 
-  const startRecording = async () => {
+  const startRecording = async (onAudioChunk) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Create audio context
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({
+        sampleRate: 16000, // Use 16kHz directly if possible
+      });
+      
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: { 
+          sampleRate: 16000, // Request 16kHz if possible
+          channelCount: 1,   // Mono
+          echoCancellation: true,
+          noiseSuppression: true,
+        } 
+      });
+      
+      // Create media recorder with smaller timeslice for more frequent chunks
       mediaRecorderRef.current = new MediaRecorder(stream);
       audioChunksRef.current = [];
       
-      mediaRecorderRef.current.ondataavailable = (event) => {
+      // Set up data handler for streaming
+      mediaRecorderRef.current.ondataavailable = async (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
+          
+          // Process this chunk if we're not already processing one
+          if (onAudioChunk && !processingChunkRef.current) {
+            processingChunkRef.current = true;
+            
+            try {
+              // Create a blob from all chunks so far
+              const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+              
+              // Process the audio chunk
+              await onAudioChunk(audioBlob);
+            } catch (error) {
+              console.error('Error processing audio chunk:', error);
+            } finally {
+              processingChunkRef.current = false;
+            }
+          }
         }
       };
       
-      mediaRecorderRef.current.start();
+      // Start recording with a 1-second timeslice for streaming
+      mediaRecorderRef.current.start(1000);
       setIsRecording(true);
       addLog('Recording started');
     } catch (error) {
@@ -163,10 +199,22 @@ function useAudioRecorder() {
         return;
       }
 
+      // Clear any streaming interval
+      if (streamingIntervalRef.current) {
+        clearInterval(streamingIntervalRef.current);
+        streamingIntervalRef.current = null;
+      }
+
       mediaRecorderRef.current.onstop = () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         const tracks = mediaRecorderRef.current.stream.getTracks();
         tracks.forEach(track => track.stop());
+        
+        // Close audio context
+        if (audioContextRef.current) {
+          audioContextRef.current.close();
+          audioContextRef.current = null;
+        }
         
         setIsRecording(false);
         addLog('Recording stopped');
@@ -223,6 +271,7 @@ function StatusIndicator({ status, text }) {
 
 function App() {
   const [transcription, setTranscription] = useState('');
+  const [streamingTranscription, setStreamingTranscription] = useState('');
   const [wordTimestamps, setWordTimestamps] = useState(null);
   const [performanceMetrics, setPerformanceMetrics] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -235,6 +284,12 @@ function App() {
   const startXRef = useRef(0);
   const startWidthRef = useRef(0);
   const transcriber = useRef(null);
+  const recordingStartTimeRef = useRef(null);
+  const streamingMetricsRef = useRef({
+    chunks_processed: 0,
+    total_audio_duration: 0,
+    total_processing_time: 0,
+  });
   
   // Function to handle loading the model from local files
   const loadModel = async () => {
@@ -278,6 +333,8 @@ function App() {
       transcriber.current = await pipeline('automatic-speech-recognition', modelName, {
         ...options,
         processor: processor, // Use the pre-loaded processor
+        chunk_length_s: 5,    // Use smaller chunks for streaming
+        stride_length_s: 1,   // Smaller stride for better continuity
       });
       
       setModelLoaded(true);
@@ -291,6 +348,71 @@ function App() {
     }
   };
   
+  // Process a chunk of audio for streaming transcription
+  const processAudioChunk = async (audioBlob) => {
+    if (!transcriber.current) return;
+    
+    try {
+      const chunkStartTime = performance.now();
+      
+      // Convert blob to ArrayBuffer
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      
+      // Create a Float32Array from the audio data
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const audioData = await new Promise((resolve) => {
+        audioContext.decodeAudioData(arrayBuffer, (buffer) => {
+          // Get the first channel data
+          const channelData = buffer.getChannelData(0);
+          
+          // Resample to 16kHz if needed
+          if (buffer.sampleRate !== 16000) {
+            const resampleRatio = buffer.sampleRate / 16000;
+            const resampledLength = Math.floor(channelData.length / resampleRatio);
+            const resampledData = new Float32Array(resampledLength);
+            
+            for (let i = 0; i < resampledLength; i++) {
+              resampledData[i] = channelData[Math.floor(i * resampleRatio)];
+            }
+            
+            resolve(resampledData);
+          } else {
+            resolve(channelData);
+          }
+        });
+      });
+      
+      // Close the audio context
+      audioContext.close();
+      
+      // Measure audio duration
+      const audioDuration = audioData.length / 16000; // in seconds
+      
+      // Process with streaming options
+      const result = await transcriber.current(audioData, {
+        return_timestamps: false, // Simpler for streaming
+        is_partial: true, // Mark as partial for streaming
+      });
+      
+      // Update streaming transcription
+      setStreamingTranscription(result.text || "");
+      
+      // Update streaming metrics (but don't display them yet)
+      const chunkEndTime = performance.now();
+      const chunkProcessingTime = chunkEndTime - chunkStartTime;
+      
+      streamingMetricsRef.current.chunks_processed += 1;
+      streamingMetricsRef.current.total_audio_duration += audioDuration;
+      streamingMetricsRef.current.total_processing_time += chunkProcessingTime;
+      
+      // We're not updating performance metrics during streaming to avoid UI lag
+      
+    } catch (error) {
+      console.error('Error in streaming transcription:', error);
+      // Don't show errors during streaming to avoid disrupting the UI
+    }
+  };
+  
   // Use effect to load the model on component mount
   useEffect(() => {
     loadModel();
@@ -298,29 +420,28 @@ function App() {
 
   const handleMicrophoneClick = async () => {
     if (isRecording) {
+      // Stop recording
       setIsProcessing(true);
+      // Keep the streaming transcription visible during finalization
+      // Don't clear streamingTranscription here
+      
       const audioBlob = await stopRecording();
       
       if (audioBlob) {
         try {
-          addLog('Processing audio...');
+          addLog('Finalizing transcription...');
           
           const startTime = performance.now();
           
-          // More efficient audio processing
-          // Convert blob directly to ArrayBuffer
+          // Process the complete audio for final result
           const arrayBuffer = await audioBlob.arrayBuffer();
           
-          // Create a Float32Array from the audio data - more efficient than URL creation
           const audioContext = new (window.AudioContext || window.webkitAudioContext)();
           const audioData = await new Promise((resolve) => {
             audioContext.decodeAudioData(arrayBuffer, (buffer) => {
-              // Get the first channel data
               const channelData = buffer.getChannelData(0);
               
-              // Resample to 16kHz if needed (Whisper expects 16kHz)
               if (buffer.sampleRate !== 16000) {
-                // Simple resampling by picking samples at intervals
                 const resampleRatio = buffer.sampleRate / 16000;
                 const resampledLength = Math.floor(channelData.length / resampleRatio);
                 const resampledData = new Float32Array(resampledLength);
@@ -336,23 +457,17 @@ function App() {
             });
           });
           
-          // Measure audio duration
-          const audioDuration = audioData.length / 16000; // in seconds
+          audioContext.close();
           
-          // Run inference with the ONNX model
+          // Measure audio duration
+          const audioDuration = audioData.length / 16000;
+          
+          // Run final inference with word timestamps
           const inferenceStart = performance.now();
           
-          // Use chunking for better performance on longer audio
-          const options = { 
+          const result = await transcriber.current(audioData, { 
             return_timestamps: 'word',
-            chunk_length_s: 30, // Process in 30-second chunks
-            stride_length_s: 5, // 5-second overlap between chunks
-          };
-          
-          const result = await transcriber.current(audioData, options);
-          
-          // Close the audio context to free resources
-          audioContext.close();
+          });
           
           const inferenceEnd = performance.now();
           const inferenceTime = inferenceEnd - inferenceStart;
@@ -363,19 +478,21 @@ function App() {
           // Calculate overhead time
           const overheadTime = totalTime - inferenceTime;
           
-          // Set transcription text
+          // Set final transcription
           setTranscription(result.text || "");
+          setStreamingTranscription(""); // Only clear streaming transcription after we have the final result
           
-          // Always set word timestamps if available (but we won't display them)
+          // Set word timestamps
           setWordTimestamps(result.chunks || null);
           
-          // Set performance metrics with audio duration
+          // Set final performance metrics
           setPerformanceMetrics({
+            streaming: false,
             total_ms: Math.round(totalTime),
             model_inference_ms: Math.round(inferenceTime),
             overhead_ms: Math.round(overheadTime),
             audio_duration_s: audioDuration,
-            realtime_factor: audioDuration > 0 ? totalTime / (audioDuration * 1000) : null
+            realtime_factor: totalTime / (audioDuration * 1000),
           });
           
           addLog('Transcription complete');
@@ -387,15 +504,31 @@ function App() {
       }
       setIsProcessing(false);
     } else {
+      // Start recording with streaming
       if (!modelLoaded) {
         addLog('Model not loaded yet. Please wait.');
         return;
       }
+      
+      // Reset state for new recording
       setTranscription('');
+      setStreamingTranscription('');
       setWordTimestamps(null);
-      setPerformanceMetrics(null);
+      setPerformanceMetrics(null); // Clear performance metrics
       setError(null);
-      await startRecording();
+      
+      // Reset streaming metrics
+      streamingMetricsRef.current = {
+        chunks_processed: 0,
+        total_audio_duration: 0,
+        total_processing_time: 0,
+      };
+      
+      // Set recording start time
+      recordingStartTimeRef.current = performance.now();
+      
+      // Start recording with streaming processor
+      await startRecording(processAudioChunk);
     }
   };
   
@@ -450,14 +583,24 @@ function App() {
             <div style={{ width: '100%', border: '1px solid #d1d5db', borderRadius: '0.375rem', backgroundColor: 'white', marginBottom: '1rem', position: 'relative', boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)' }}>
               {/* Transcription area */}
               <div style={{ padding: '1.25rem', minHeight: '180px' }}>
-                {isProcessing ? (
-                  <p style={{ color: '#6b7280', margin: 0 }}>Processing audio...</p>
-                ) : error ? (
+                {error ? (
                   <div>
                     <p style={{ color: '#ef4444', margin: '0 0 1rem 0' }}>{error}</p>
                     <p style={{ fontSize: '0.875rem', color: '#6b7280' }}>
                       Make sure the model files are in the 'whisper-tiny' folder.
                     </p>
+                  </div>
+                ) : isProcessing ? (
+                  <div>
+                    <p style={{ margin: 0 }}>{streamingTranscription}</p>
+                    <p style={{ color: '#6b7280', margin: '0.5rem 0 0 0', fontSize: '0.875rem' }}>Finalizing transcription...</p>
+                  </div>
+                ) : isRecording && streamingTranscription ? (
+                  <div style={{ position: 'relative' }}>
+                    <p style={{ margin: 0 }}>{streamingTranscription}</p>
+                    <div style={{ position: 'absolute', bottom: '-1.5rem', right: 0, fontSize: '0.75rem', color: '#6b7280' }}>
+                      Streaming...
+                    </div>
                   </div>
                 ) : transcription ? (
                   <>
