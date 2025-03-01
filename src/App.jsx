@@ -222,36 +222,61 @@ function App() {
   const startXRef = useRef(0);
   const startWidthRef = useRef(0);
   const transcriber = useRef(null);
-
-  // Load the whisper model
-  useEffect(() => {
-    async function loadModel() {
-      try {
-        setIsLoading(true);
-        setError(null);
-        addLog('Loading @xenova/transformers package...');
-        
-        // Dynamically import the pipeline to avoid SSR issues
-        const { pipeline } = await import('@xenova/transformers');
-        addLog('Loading Whisper model...');
-        
-        // Create the transcription pipeline
-        transcriber.current = await pipeline(
-          'automatic-speech-recognition',
-          'Xenova/whisper-tiny.en'
-        );
-        
-        setModelLoaded(true);
-        addLog('Whisper model loaded successfully!');
-      } catch (error) {
-        console.error('Error loading model:', error);
-        setError(`Failed to load model: ${error.message}`);
-        addLog(`Error loading model: ${error.message}`);
-      } finally {
-        setIsLoading(false);
-      }
+  
+  // Function to handle loading the model from local files
+  const loadModel = async () => {
+    try {
+      setIsLoading(true);
+      setError(null);
+      addLog('Loading transformers.js package...');
+      
+      // Import transformers package
+      const { pipeline, env } = await import('@xenova/transformers');
+      
+      // Configure for local files only
+      addLog('Configuring for local model loading');
+      
+      // Set to only use local files
+      env.allowLocalModels = true;
+      env.localModelPath = '/models/';
+      
+      // Disable any online retrieval
+      env.useCacheFirst = false; // Don't try online if local fails
+      env.remoteModelPath = null; // Don't use remote path
+      
+      // Use the correct model name format
+      const modelName = 'Xenova/whisper-tiny';
+      addLog(`Setting up to load local model from: ${env.localModelPath}${modelName}`);
+      
+      // Configure options with progress reporting
+      const options = {
+        quantized: true,
+        progress_callback: (progress) => {
+          if (progress.status) {
+            addLog(`Model loading: ${progress.status}`);
+          }
+        },
+        local_files_only: true // Enforce local files only
+      };
+      
+      addLog('Creating ASR pipeline...');
+      transcriber.current = await pipeline('automatic-speech-recognition', modelName, options);
+      
+      setModelLoaded(true);
+      addLog('Whisper model loaded successfully!');
+    } catch (error) {
+      console.error('Error loading model:', error);
+      
+      // Simplified error handling focused on local file access
+      addLog(`Error loading model: ${error.message}`);
+      setError(`Failed to load model: ${error.message}. Make sure all model files are correctly placed in the public/models/Xenova/whisper-tiny directory.`);
+    } finally {
+      setIsLoading(false);
     }
-    
+  };
+  
+  // Use effect to load the model on component mount
+  useEffect(() => {
     loadModel();
   }, []);
 
@@ -266,15 +291,19 @@ function App() {
           
           const startTime = performance.now();
           
-          // Convert blob to ArrayBuffer
-          const arrayBuffer = await audioBlob.arrayBuffer();
+          // Create a URL for the blob to be processed
+          const audioURL = URL.createObjectURL(audioBlob);
           
-          // Run inference with the ONNX model
+          // Run inference with the ONNX model - directly pass the URL to the transcriber
           const inferenceStart = performance.now();
           
           // Use word-level timestamps if enabled
           const options = showTimestamps ? { return_timestamps: 'word' } : {};
-          const result = await transcriber.current(arrayBuffer, options);
+          addLog('Running inference...');
+          const result = await transcriber.current(audioURL, options);
+          
+          // Clean up the URL
+          URL.revokeObjectURL(audioURL);
           
           const inferenceEnd = performance.now();
           const inferenceTime = inferenceEnd - inferenceStart;
@@ -391,7 +420,12 @@ function App() {
                 {isProcessing ? (
                   <p style={{ color: '#6b7280', margin: 0 }}>Processing audio...</p>
                 ) : error ? (
-                  <p style={{ color: '#ef4444', margin: 0 }}>{error}</p>
+                  <div>
+                    <p style={{ color: '#ef4444', margin: '0 0 1rem 0' }}>{error}</p>
+                    <p style={{ fontSize: '0.875rem', color: '#6b7280' }}>
+                      Make sure the model files are in the 'whisper-tiny' folder.
+                    </p>
+                  </div>
                 ) : transcription ? (
                   <>
                     <p style={{ margin: 0 }}>{transcription}</p>
@@ -432,6 +466,27 @@ function App() {
                 />
               </div>
             </div>
+            
+            {/* Retry button if there was an error */}
+            {error && (
+              <button
+                onClick={loadModel}
+                disabled={isLoading}
+                style={{
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#2563eb',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '0.375rem',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                  cursor: isLoading ? 'not-allowed' : 'pointer',
+                  opacity: isLoading ? 0.7 : 1
+                }}
+              >
+                {isLoading ? 'Loading...' : 'Retry Loading Model'}
+              </button>
+            )}
           </div>
         </div>
       </div>
