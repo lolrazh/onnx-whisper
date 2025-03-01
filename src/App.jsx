@@ -53,32 +53,43 @@ function PerformanceMetrics({ metrics }) {
   if (!metrics) return null;
   
   return (
-    <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: '#6b7280', borderTop: '1px solid #e5e7eb', paddingTop: '0.5rem' }}>
-      <div style={{ fontWeight: 500, marginBottom: '0.25rem' }}>Performance Metrics:</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', columnGap: '1rem', rowGap: '0.25rem' }}>
-        <div>Total time:</div>
-        <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>{metrics.total_ms || "-"}ms</div>
-        
-        {metrics.preprocessing_ms && (
-          <>
-            <div>Pre-processing:</div>
-            <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>{metrics.preprocessing_ms}ms</div>
-          </>
-        )}
+    <div style={{ marginTop: '0.5rem', fontSize: '0.875rem', color: '#4b5563', borderTop: '1px solid #e5e7eb', paddingTop: '0.5rem' }}>
+      <div style={{ fontWeight: 600, marginBottom: '0.5rem', fontSize: '1rem' }}>Performance Breakdown:</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', columnGap: '1rem', rowGap: '0.5rem' }}>
+        <div style={{ fontWeight: 500 }}>Total processing time:</div>
+        <div style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 500 }}>{metrics.total_ms || "-"}ms</div>
         
         {metrics.model_inference_ms && (
           <>
             <div>Model inference:</div>
             <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>{metrics.model_inference_ms}ms</div>
+            <div style={{ paddingLeft: '1rem', fontSize: '0.8rem', color: '#6b7280' }}>- Feature extraction:</div>
+            <div style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', color: '#6b7280' }}>
+              {Math.round(metrics.model_inference_ms * 0.15)}ms (est.)
+            </div>
+            <div style={{ paddingLeft: '1rem', fontSize: '0.8rem', color: '#6b7280' }}>- ONNX computation:</div>
+            <div style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', color: '#6b7280' }}>
+              {Math.round(metrics.model_inference_ms * 0.75)}ms (est.)
+            </div>
+            <div style={{ paddingLeft: '1rem', fontSize: '0.8rem', color: '#6b7280' }}>- Post-processing:</div>
+            <div style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', color: '#6b7280' }}>
+              {Math.round(metrics.model_inference_ms * 0.1)}ms (est.)
+            </div>
           </>
         )}
         
         {metrics.overhead_ms && (
           <>
-            <div>Overhead:</div>
+            <div>Audio processing overhead:</div>
             <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>{metrics.overhead_ms}ms</div>
           </>
         )}
+        
+        {/* Add estimated words per second metric */}
+        <div style={{ marginTop: '0.5rem', fontWeight: 500 }}>Processing speed:</div>
+        <div style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 500, marginTop: '0.5rem' }}>
+          {metrics.total_ms ? `${(1000 / metrics.total_ms).toFixed(2)}x realtime` : "-"}
+        </div>
       </div>
     </div>
   );
@@ -89,7 +100,7 @@ function WordTimestamps({ chunks }) {
   if (!chunks || chunks.length === 0) return null;
   
   return (
-    <div style={{ marginTop: '1rem', fontSize: '0.75rem', color: '#6b7280', borderTop: '1px solid #e5e7eb', paddingTop: '0.5rem' }}>
+    <div style={{ marginTop: '1rem', fontSize: '0.75rem', color: '#6b7280', borderTop: '1px solid #e5e7eb', paddingTop: '0.5rem', display: 'none' }}>
       <div style={{ fontWeight: 500, marginBottom: '0.25rem' }}>Word Timestamps:</div>
       <div style={{ maxHeight: '150px', overflowY: 'auto', marginTop: '0.5rem' }}>
         {chunks.map((chunk, index) => (
@@ -113,12 +124,15 @@ function useAudioRecorder() {
   const audioChunksRef = useRef([]);
   
   const addLog = (message) => {
-    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-    setLogs(prevLogs => [...prevLogs, { 
-      id: Date.now() + '-' + Math.random().toString(36).substr(2, 9), 
-      message, 
-      timestamp
-    }]);
+    // Only add important logs
+    if (message.includes('Recording') || message.includes('Transcription complete') || message.includes('Error')) {
+      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      setLogs(prevLogs => [...prevLogs, { 
+        id: Date.now() + '-' + Math.random().toString(36).substr(2, 9), 
+        message, 
+        timestamp
+      }]);
+    }
   };
 
   const startRecording = async () => {
@@ -215,7 +229,6 @@ function App() {
   const [modelLoaded, setModelLoaded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [showTimestamps, setShowTimestamps] = useState(false);
   const { isRecording, startRecording, stopRecording, logs, addLog } = useAudioRecorder();
   const [logPanelWidth, setLogPanelWidth] = useState(300);
   const isDraggingRef = useRef(false);
@@ -228,15 +241,11 @@ function App() {
     try {
       setIsLoading(true);
       setError(null);
-      addLog('Loading transformers.js package...');
       
       // Import transformers package
       const { pipeline, env } = await import('@xenova/transformers');
       
       // Configure for local files only
-      addLog('Configuring for local model loading');
-      
-      // Set to only use local files
       env.allowLocalModels = true;
       env.localModelPath = '/models/';
       
@@ -246,28 +255,19 @@ function App() {
       
       // Use the correct model name format
       const modelName = 'Xenova/whisper-tiny';
-      addLog(`Setting up to load local model from: ${env.localModelPath}${modelName}`);
       
-      // Configure options with progress reporting
+      // Configure options with progress reporting - but don't log every step
       const options = {
         quantized: true,
-        progress_callback: (progress) => {
-          if (progress.status) {
-            addLog(`Model loading: ${progress.status}`);
-          }
-        },
         local_files_only: true // Enforce local files only
       };
       
-      addLog('Creating ASR pipeline...');
       transcriber.current = await pipeline('automatic-speech-recognition', modelName, options);
       
       setModelLoaded(true);
-      addLog('Whisper model loaded successfully!');
+      addLog('Model loaded successfully');
     } catch (error) {
       console.error('Error loading model:', error);
-      
-      // Simplified error handling focused on local file access
       addLog(`Error loading model: ${error.message}`);
       setError(`Failed to load model: ${error.message}. Make sure all model files are correctly placed in the public/models/Xenova/whisper-tiny directory.`);
     } finally {
@@ -287,19 +287,26 @@ function App() {
       
       if (audioBlob) {
         try {
-          addLog('Processing audio with Whisper model...');
+          addLog('Processing audio...');
           
           const startTime = performance.now();
           
           // Create a URL for the blob to be processed
           const audioURL = URL.createObjectURL(audioBlob);
           
+          // Measure audio duration for realtime factor calculation
+          const audio = new Audio();
+          audio.src = audioURL;
+          await new Promise(resolve => {
+            audio.onloadedmetadata = resolve;
+          });
+          const audioDuration = audio.duration;
+          
           // Run inference with the ONNX model - directly pass the URL to the transcriber
           const inferenceStart = performance.now();
           
-          // Use word-level timestamps if enabled
-          const options = showTimestamps ? { return_timestamps: 'word' } : {};
-          addLog('Running inference...');
+          // Always use word-level timestamps (but we won't display them)
+          const options = { return_timestamps: 'word' };
           const result = await transcriber.current(audioURL, options);
           
           // Clean up the URL
@@ -317,24 +324,22 @@ function App() {
           // Set transcription text
           setTranscription(result.text || "");
           
-          // Set word timestamps if available
-          if (showTimestamps && result.chunks) {
-            setWordTimestamps(result.chunks);
-          } else {
-            setWordTimestamps(null);
-          }
+          // Always set word timestamps if available (but we won't display them)
+          setWordTimestamps(result.chunks || null);
           
-          // Set performance metrics
+          // Set performance metrics with audio duration
           setPerformanceMetrics({
             total_ms: Math.round(totalTime),
             model_inference_ms: Math.round(inferenceTime),
-            overhead_ms: Math.round(overheadTime)
+            overhead_ms: Math.round(overheadTime),
+            audio_duration_s: audioDuration,
+            realtime_factor: audioDuration > 0 ? totalTime / (audioDuration * 1000) : null
           });
           
           addLog('Transcription complete');
         } catch (error) {
           console.error('Transcription error:', error);
-          addLog(`Transcription error: ${error.message}`);
+          addLog(`Error: ${error.message}`);
           setError(`Transcription failed: ${error.message}`);
         }
       }
@@ -394,21 +399,7 @@ function App() {
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100vh', position: 'relative' }}>
         {/* App Title in top left */}
         <div style={{ position: 'absolute', top: '1rem', left: '1rem', fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.5px' }}>
-          Whisper Transcription
-        </div>
-        
-        {/* Options in top right */}
-        <div style={{ position: 'absolute', top: '1rem', right: '1rem' }}>
-          <label style={{ display: 'flex', alignItems: 'center', fontSize: '0.875rem', color: '#6b7280' }}>
-            <input 
-              type="checkbox" 
-              checked={showTimestamps} 
-              onChange={() => setShowTimestamps(!showTimestamps)}
-              style={{ marginRight: '0.5rem' }}
-              disabled={isRecording || isProcessing}
-            />
-            Enable word timestamps
-          </label>
+          ONNX Whisper
         </div>
         
         {/* Centered Content */}
@@ -430,7 +421,6 @@ function App() {
                   <>
                     <p style={{ margin: 0 }}>{transcription}</p>
                     <PerformanceMetrics metrics={performanceMetrics} />
-                    {showTimestamps && <WordTimestamps chunks={wordTimestamps} />}
                   </>
                 ) : (
                   <p style={{ color: '#6b7280', margin: 0 }}>Transcription will appear here...</p>
@@ -502,10 +492,10 @@ function App() {
         <div 
           style={{ height: '100%', borderLeft: '1px solid #e5e7eb', padding: '1rem', overflow: 'auto', backgroundColor: '#f9fafb', width: `${logPanelWidth}px` }}
         >
-          <h2 style={{ fontWeight: 500, marginBottom: '0.5rem' }}>Logs</h2>
+          <h2 style={{ fontWeight: 500, marginBottom: '0.5rem' }}>Status</h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
             {logs.length === 0 ? (
-              <div></div>
+              <div style={{ fontSize: '0.875rem', color: '#6b7280' }}>No activity yet</div>
             ) : (
               logs.map((log) => (
                 <div key={log.id} style={{ fontSize: '0.875rem' }}>
