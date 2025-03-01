@@ -242,27 +242,43 @@ function App() {
       setIsLoading(true);
       setError(null);
       
-      // Import transformers package
-      const { pipeline, env } = await import('@xenova/transformers');
+      // Import transformers package with additional components
+      const { pipeline, env, AutoProcessor } = await import('@xenova/transformers');
       
       // Configure for local files only
       env.allowLocalModels = true;
       env.localModelPath = '/models/';
       
       // Disable any online retrieval
-      env.useCacheFirst = false; // Don't try online if local fails
-      env.remoteModelPath = null; // Don't use remote path
+      env.useCacheFirst = false;
+      env.remoteModelPath = null;
+      
+      // Performance optimizations
+      env.backends.onnx.wasm.numThreads = navigator.hardwareConcurrency || 4; // Use available CPU cores
+      env.backends.onnx.wasm.simd = true; // Enable SIMD if available
+      env.backends.onnx.wasm.proxy = false; // Disable proxy for better performance
       
       // Use the correct model name format
       const modelName = 'Xenova/whisper-tiny';
       
-      // Configure options with progress reporting - but don't log every step
+      // Configure options with performance optimizations
       const options = {
         quantized: true,
-        local_files_only: true // Enforce local files only
+        local_files_only: true,
+        revision: 'main',
+        cache_dir: '/models/',
+        framework: 'onnx',
+        optimize: true, // Request runtime optimizations
       };
       
-      transcriber.current = await pipeline('automatic-speech-recognition', modelName, options);
+      // Pre-load the processor to avoid doing this during inference
+      const processor = await AutoProcessor.from_pretrained(modelName, options);
+      
+      // Create the pipeline with the processor
+      transcriber.current = await pipeline('automatic-speech-recognition', modelName, {
+        ...options,
+        processor: processor, // Use the pre-loaded processor
+      });
       
       setModelLoaded(true);
       addLog('Model loaded successfully');
@@ -291,26 +307,52 @@ function App() {
           
           const startTime = performance.now();
           
-          // Create a URL for the blob to be processed
-          const audioURL = URL.createObjectURL(audioBlob);
+          // More efficient audio processing
+          // Convert blob directly to ArrayBuffer
+          const arrayBuffer = await audioBlob.arrayBuffer();
           
-          // Measure audio duration for realtime factor calculation
-          const audio = new Audio();
-          audio.src = audioURL;
-          await new Promise(resolve => {
-            audio.onloadedmetadata = resolve;
+          // Create a Float32Array from the audio data - more efficient than URL creation
+          const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          const audioData = await new Promise((resolve) => {
+            audioContext.decodeAudioData(arrayBuffer, (buffer) => {
+              // Get the first channel data
+              const channelData = buffer.getChannelData(0);
+              
+              // Resample to 16kHz if needed (Whisper expects 16kHz)
+              if (buffer.sampleRate !== 16000) {
+                // Simple resampling by picking samples at intervals
+                const resampleRatio = buffer.sampleRate / 16000;
+                const resampledLength = Math.floor(channelData.length / resampleRatio);
+                const resampledData = new Float32Array(resampledLength);
+                
+                for (let i = 0; i < resampledLength; i++) {
+                  resampledData[i] = channelData[Math.floor(i * resampleRatio)];
+                }
+                
+                resolve(resampledData);
+              } else {
+                resolve(channelData);
+              }
+            });
           });
-          const audioDuration = audio.duration;
           
-          // Run inference with the ONNX model - directly pass the URL to the transcriber
+          // Measure audio duration
+          const audioDuration = audioData.length / 16000; // in seconds
+          
+          // Run inference with the ONNX model
           const inferenceStart = performance.now();
           
-          // Always use word-level timestamps (but we won't display them)
-          const options = { return_timestamps: 'word' };
-          const result = await transcriber.current(audioURL, options);
+          // Use chunking for better performance on longer audio
+          const options = { 
+            return_timestamps: 'word',
+            chunk_length_s: 30, // Process in 30-second chunks
+            stride_length_s: 5, // 5-second overlap between chunks
+          };
           
-          // Clean up the URL
-          URL.revokeObjectURL(audioURL);
+          const result = await transcriber.current(audioData, options);
+          
+          // Close the audio context to free resources
+          audioContext.close();
           
           const inferenceEnd = performance.now();
           const inferenceTime = inferenceEnd - inferenceStart;
