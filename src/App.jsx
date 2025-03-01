@@ -5,26 +5,38 @@ import { BACKENDS } from './config';
 function MicrophoneButton({ isRecording, onClick, disabled }) {
   return (
     <button
-      className="flex justify-center items-center w-10 h-10 rounded-md transition duration-300"
       style={{ 
-        backgroundColor: isRecording ? '#ef4444' : '#000',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        width: '2.5rem',
+        height: '2.5rem',
+        borderRadius: '0.375rem',
+        transition: 'all 300ms',
+        backgroundColor: isRecording ? '#ef4444' : '#000000',
         opacity: disabled ? 0.5 : 1,
-        cursor: disabled ? 'not-allowed' : 'pointer'
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        border: 'none'
       }}
       onClick={onClick}
       disabled={disabled}
       aria-label={isRecording ? 'Stop recording' : 'Start recording'}
     >
       {isRecording ? (
-        // Square icon when recording
-        <div className="w-4 h-4" style={{ backgroundColor: 'white', borderRadius: '2px' }}></div>
+        // Stop square icon when recording
+        <div style={{ 
+          width: '0.75rem', 
+          height: '0.75rem', 
+          backgroundColor: 'white', 
+          borderRadius: '1px' 
+        }}></div>
       ) : (
         // Microphone icon when not recording
         <svg 
           xmlns="http://www.w3.org/2000/svg" 
           viewBox="0 0 24 24" 
           fill="white" 
-          className="w-5 h-5"
+          style={{ width: '1.25rem', height: '1.25rem' }}
         >
           <path fillRule="evenodd" d="M13 6a1 1 0 1 0-2 0v4a1 1 0 1 0 2 0V6zm-1 8a1 1 0 0 1 1 1v3a1 1 0 1 1-2 0v-3a1 1 0 0 1 1-1z" clipRule="evenodd"/>
           <path fillRule="evenodd" d="M12 2a4 4 0 0 0-4 4v4a4 4 0 0 0 8 0V6a4 4 0 0 0-4-4zm-2 4a2 2 0 1 1 4 0v4a2 2 0 1 1-4 0V6z" clipRule="evenodd"/>
@@ -143,6 +155,40 @@ function useAudioRecorder() {
     logs,
     addLog
   };
+}
+
+// Status indicator component
+function StatusIndicator({ status, text }) {
+  if (status === 'initializing') {
+    return (
+      <span style={{ display: 'flex', alignItems: 'center' }}>
+        <svg className="animate-spin" style={{ marginRight: '0.5rem', height: '1rem', width: '1rem', color: 'black' }} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle style={{ opacity: 0.25 }} cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+          <path style={{ opacity: 0.75 }} fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        {text}
+      </span>
+    );
+  }
+  
+  let color = '#eab308'; // Yellow for not initialized
+  if (status === 'ready') color = '#10b981'; // Green
+  if (status === 'recording') color = '#ef4444'; // Red
+  
+  const animationClass = status === 'recording' ? 'animate-pulse' : '';
+  
+  return (
+    <span style={{ display: 'flex', alignItems: 'center' }}>
+      <span className={animationClass} style={{ 
+        height: '0.5rem', 
+        width: '0.5rem', 
+        backgroundColor: color, 
+        borderRadius: '9999px', 
+        marginRight: '0.5rem' 
+      }}></span>
+      {text}
+    </span>
+  );
 }
 
 function App() {
@@ -277,61 +323,37 @@ function App() {
           <div style={{ width: '100%', maxWidth: '28rem', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <div style={{ width: '100%', border: '1px solid #d1d5db', borderRadius: '0.375rem', backgroundColor: 'white', marginBottom: '1rem', position: 'relative', boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)' }}>
               {/* Transcription area */}
-              <div style={{ padding: '1rem', minHeight: '180px' }}>
+              <div style={{ padding: '1.25rem', minHeight: '180px' }}>
                 {isProcessing ? (
-                  <p style={{ color: '#6b7280' }}>Processing audio...</p>
+                  <p style={{ color: '#6b7280', margin: 0 }}>Processing audio...</p>
                 ) : transcription ? (
                   <>
-                    <p>{transcription}</p>
+                    <p style={{ margin: 0 }}>{transcription}</p>
                     <PerformanceMetrics metrics={performanceMetrics} />
                   </>
                 ) : (
-                  <p style={{ color: '#6b7280' }}>Transcription will appear here...</p>
+                  <p style={{ color: '#6b7280', margin: 0 }}>Transcription will appear here...</p>
                 )}
               </div>
               
               {/* Control bar at the bottom */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem', borderTop: '1px solid #e5e7eb', backgroundColor: '#f9fafb', borderBottomLeftRadius: '0.375rem', borderBottomRightRadius: '0.375rem' }}>
-                {/* Status indicator for Groq API */}
-                <div style={{ display: 'flex', alignItems: 'center', paddingLeft: '0.75rem', paddingRight: '0.75rem', paddingTop: '0.5rem', paddingBottom: '0.5rem' }}>
-                  <span style={{ fontSize: '0.875rem' }}>Groq API</span>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.75rem', borderTop: '1px solid #e5e7eb', backgroundColor: '#f9fafb', borderBottomLeftRadius: '0.375rem', borderBottomRightRadius: '0.375rem' }}>
+                {/* Status indicator on the left */}
+                <div style={{ fontSize: '0.875rem', color: '#6b7280' }}>
+                  {isInitializing ? 
+                    <StatusIndicator status="initializing" text="Initializing..." /> :
+                  isProcessing ? 
+                    <StatusIndicator status="initializing" text="Processing..." /> :
+                  isRecording ? 
+                    <StatusIndicator status="recording" text="Recording..." /> :
+                  backendInitialized ? 
+                    <StatusIndicator status="ready" text="Ready" /> :
+                    <StatusIndicator status="not-initialized" text="Not initialized" />
+                  }
                 </div>
                 
-                {/* Status indicator in the middle */}
-                <div style={{ fontSize: '0.875rem', color: '#6b7280' }}>
-                  {isInitializing ? (
-                    <span style={{ display: 'flex', alignItems: 'center' }}>
-                      <svg className="animate-spin" style={{ marginLeft: '-0.25rem', marginRight: '0.5rem', height: '1rem', width: '1rem', color: 'black' }} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle style={{ opacity: 0.25 }} cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path style={{ opacity: 0.75 }} fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      Initializing...
-                    </span>
-                  ) : isProcessing ? (
-                    <span style={{ display: 'flex', alignItems: 'center' }}>
-                      <svg className="animate-spin" style={{ marginLeft: '-0.25rem', marginRight: '0.5rem', height: '1rem', width: '1rem', color: 'black' }} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle style={{ opacity: 0.25 }} cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path style={{ opacity: 0.75 }} fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      Processing...
-                    </span>
-                  ) : isRecording ? (
-                    <span style={{ display: 'flex', alignItems: 'center' }}>
-                      <span className="animate-pulse" style={{ height: '0.5rem', width: '0.5rem', backgroundColor: '#ef4444', borderRadius: '9999px', marginRight: '0.5rem' }}></span>
-                      Recording...
-                    </span>
-                  ) : backendInitialized ? (
-                    <span style={{ display: 'flex', alignItems: 'center' }}>
-                      <span style={{ height: '0.5rem', width: '0.5rem', backgroundColor: '#10b981', borderRadius: '9999px', marginRight: '0.5rem' }}></span>
-                      Ready
-                    </span>
-                  ) : (
-                    <span style={{ display: 'flex', alignItems: 'center' }}>
-                      <span style={{ height: '0.5rem', width: '0.5rem', backgroundColor: '#eab308', borderRadius: '9999px', marginRight: '0.5rem' }}></span>
-                      Not initialized
-                    </span>
-                  )}
-                </div>
+                {/* Empty middle space */}
+                <div></div>
                 
                 {/* Microphone button on the right */}
                 <MicrophoneButton 
@@ -359,11 +381,11 @@ function App() {
           <h2 style={{ fontWeight: 500, marginBottom: '0.5rem' }}>Logs</h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
             {logs.length === 0 ? (
-              <p style={{ color: '#6b7280', fontSize: '0.875rem' }}>No logs yet...</p>
+              <p style={{ color: '#6b7280', fontSize: '0.875rem' }}>No logs yet</p>
             ) : (
               logs.map((log) => (
                 <div key={log.id} style={{ fontSize: '0.875rem' }}>
-                  <span style={{ color: '#6b7280' }}>[{log.timestamp} PM]</span> {log.message}
+                  <span style={{ color: '#6b7280' }}>[{log.timestamp}]</span> {log.message}
                 </div>
               ))
             )}
