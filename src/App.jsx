@@ -36,7 +36,7 @@ function MicrophoneButton({ isRecording, onClick, disabled }) {
           xmlns="http://www.w3.org/2000/svg" 
           viewBox="0 0 24 24" 
           fill="white" 
-          style={{ width: '1.25rem', height: '1.25rem' }}
+          style={{ width: '1.1rem', height: '1.1rem' }}
         >
           <path fillRule="evenodd" d="M13 6a1 1 0 1 0-2 0v4a1 1 0 1 0 2 0V6zm-1 8a1 1 0 0 1 1 1v3a1 1 0 1 1-2 0v-3a1 1 0 0 1 1-1z" clipRule="evenodd"/>
           <path fillRule="evenodd" d="M12 2a4 4 0 0 0-4 4v4a4 4 0 0 0 8 0V6a4 4 0 0 0-4-4zm-2 4a2 2 0 1 1 4 0v4a2 2 0 1 1-4 0V6z" clipRule="evenodd"/>
@@ -100,7 +100,7 @@ function useAudioRecorder() {
   const addLog = (message) => {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
     setLogs(prevLogs => [...prevLogs, { 
-      id: Date.now(), 
+      id: Date.now() + '-' + Math.random().toString(36).substr(2, 9), 
       message, 
       timestamp
     }]);
@@ -339,7 +339,7 @@ function App() {
               {/* Control bar at the bottom */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.75rem', borderTop: '1px solid #e5e7eb', backgroundColor: '#f9fafb', borderBottomLeftRadius: '0.375rem', borderBottomRightRadius: '0.375rem' }}>
                 {/* Status indicator on the left */}
-                <div style={{ fontSize: '0.875rem', color: '#6b7280' }}>
+                <div style={{ fontSize: '0.875rem', color: '#6b7280', paddingLeft: '0.5rem' }}>
                   {isInitializing ? 
                     <StatusIndicator status="initializing" text="Initializing..." /> :
                   isProcessing ? 
@@ -381,7 +381,7 @@ function App() {
           <h2 style={{ fontWeight: 500, marginBottom: '0.5rem' }}>Logs</h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
             {logs.length === 0 ? (
-              <p style={{ color: '#6b7280', fontSize: '0.875rem' }}>No logs yet</p>
+              <div></div>
             ) : (
               logs.map((log) => (
                 <div key={log.id} style={{ fontSize: '0.875rem' }}>
