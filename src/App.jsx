@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { BACKENDS } from './config';
+// Import pipeline dynamically to avoid SSR issues
+// import { pipeline } from '@xenova/transformers';
 
 // Microphone button component with square icon when recording
 function MicrophoneButton({ isRecording, onClick, disabled }) {
@@ -72,19 +73,33 @@ function PerformanceMetrics({ metrics }) {
           </>
         )}
         
-        {metrics.api_call_ms && (
-          <>
-            <div>API call:</div>
-            <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>{metrics.api_call_ms}ms</div>
-          </>
-        )}
-        
         {metrics.overhead_ms && (
           <>
             <div>Overhead:</div>
             <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>{metrics.overhead_ms}ms</div>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Word timestamp component
+function WordTimestamps({ chunks }) {
+  if (!chunks || chunks.length === 0) return null;
+  
+  return (
+    <div style={{ marginTop: '1rem', fontSize: '0.75rem', color: '#6b7280', borderTop: '1px solid #e5e7eb', paddingTop: '0.5rem' }}>
+      <div style={{ fontWeight: 500, marginBottom: '0.25rem' }}>Word Timestamps:</div>
+      <div style={{ maxHeight: '150px', overflowY: 'auto', marginTop: '0.5rem' }}>
+        {chunks.map((chunk, index) => (
+          <div key={index} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+            <span>{chunk.text}</span>
+            <span style={{ fontFamily: 'monospace', color: '#4b5563' }}>
+              [{chunk.timestamp[0].toFixed(2)}s - {chunk.timestamp[1].toFixed(2)}s]
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -174,6 +189,7 @@ function StatusIndicator({ status, text }) {
   let color = '#eab308'; // Yellow for not initialized
   if (status === 'ready') color = '#10b981'; // Green
   if (status === 'recording') color = '#ef4444'; // Red
+  if (status === 'error') color = '#f43f5e'; // Error red
   
   const animationClass = status === 'recording' ? 'animate-pulse' : '';
   
@@ -193,17 +209,51 @@ function StatusIndicator({ status, text }) {
 
 function App() {
   const [transcription, setTranscription] = useState('');
+  const [wordTimestamps, setWordTimestamps] = useState(null);
   const [performanceMetrics, setPerformanceMetrics] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [backendInitialized, setBackendInitialized] = useState(false);
-  const [isInitializing, setIsInitializing] = useState(false);
+  const [modelLoaded, setModelLoaded] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [showTimestamps, setShowTimestamps] = useState(false);
   const { isRecording, startRecording, stopRecording, logs, addLog } = useAudioRecorder();
   const [logPanelWidth, setLogPanelWidth] = useState(300);
   const isDraggingRef = useRef(false);
   const startXRef = useRef(0);
   const startWidthRef = useRef(0);
+  const transcriber = useRef(null);
 
-  const activeBackend = 'groq';
+  // Load the whisper model
+  useEffect(() => {
+    async function loadModel() {
+      try {
+        setIsLoading(true);
+        setError(null);
+        addLog('Loading @xenova/transformers package...');
+        
+        // Dynamically import the pipeline to avoid SSR issues
+        const { pipeline } = await import('@xenova/transformers');
+        addLog('Loading Whisper model...');
+        
+        // Create the transcription pipeline
+        transcriber.current = await pipeline(
+          'automatic-speech-recognition',
+          'Xenova/whisper-tiny.en'
+        );
+        
+        setModelLoaded(true);
+        addLog('Whisper model loaded successfully!');
+      } catch (error) {
+        console.error('Error loading model:', error);
+        setError(`Failed to load model: ${error.message}`);
+        addLog(`Error loading model: ${error.message}`);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    
+    loadModel();
+  }, []);
 
   const handleMicrophoneClick = async () => {
     if (isRecording) {
@@ -212,59 +262,64 @@ function App() {
       
       if (audioBlob) {
         try {
-          const result = await BACKENDS[activeBackend].transcribe(audioBlob);
+          addLog('Processing audio with Whisper model...');
           
-          // Handle both simple string returns and object returns with performance data
-          if (typeof result === 'string') {
-            setTranscription(result);
-            setPerformanceMetrics(null);
+          const startTime = performance.now();
+          
+          // Convert blob to ArrayBuffer
+          const arrayBuffer = await audioBlob.arrayBuffer();
+          
+          // Run inference with the ONNX model
+          const inferenceStart = performance.now();
+          
+          // Use word-level timestamps if enabled
+          const options = showTimestamps ? { return_timestamps: 'word' } : {};
+          const result = await transcriber.current(arrayBuffer, options);
+          
+          const inferenceEnd = performance.now();
+          const inferenceTime = inferenceEnd - inferenceStart;
+          
+          const endTime = performance.now();
+          const totalTime = endTime - startTime;
+          
+          // Calculate overhead time
+          const overheadTime = totalTime - inferenceTime;
+          
+          // Set transcription text
+          setTranscription(result.text || "");
+          
+          // Set word timestamps if available
+          if (showTimestamps && result.chunks) {
+            setWordTimestamps(result.chunks);
           } else {
-            // Extract the transcription text only
-            setTranscription(result.text || "");
-            setPerformanceMetrics({
-              total_ms: result.total_ms,
-              preprocessing_ms: result.preprocessing_ms,
-              model_inference_ms: result.model_inference_ms,
-              overhead_ms: result.overhead_ms
-            });
+            setWordTimestamps(null);
           }
           
-          addLog(`Transcription received from ${BACKENDS[activeBackend].name}`);
+          // Set performance metrics
+          setPerformanceMetrics({
+            total_ms: Math.round(totalTime),
+            model_inference_ms: Math.round(inferenceTime),
+            overhead_ms: Math.round(overheadTime)
+          });
+          
+          addLog('Transcription complete');
         } catch (error) {
           console.error('Transcription error:', error);
           addLog(`Transcription error: ${error.message}`);
+          setError(`Transcription failed: ${error.message}`);
         }
       }
       setIsProcessing(false);
     } else {
-      if (!backendInitialized) {
-        addLog(`Please initialize the backend first`);
+      if (!modelLoaded) {
+        addLog('Model not loaded yet. Please wait.');
         return;
       }
       setTranscription('');
+      setWordTimestamps(null);
       setPerformanceMetrics(null);
+      setError(null);
       await startRecording();
-    }
-  };
-  
-  const initializeBackend = async () => {
-    setIsInitializing(true);
-    addLog(`Switching to Groq API`);
-    addLog(`Initializing Groq API...`);
-    
-    try {
-      const success = await BACKENDS[activeBackend].initialize(addLog);
-      setBackendInitialized(success);
-      if (!success) {
-        addLog(`Failed to initialize Groq API: Failed to fetch`);
-        addLog(`Please make sure the backend server is running at http://localhost:8000`);
-        addLog(`Failed to initialize Groq API`);
-      }
-    } catch (error) {
-      addLog(`Error initializing backend: ${error.message}`);
-      setBackendInitialized(false);
-    } finally {
-      setIsInitializing(false);
     }
   };
   
@@ -305,17 +360,26 @@ function App() {
     };
   }, []);
 
-  // Auto-initialize on component mount
-  useEffect(() => {
-    initializeBackend();
-  }, []);
-
   return (
     <div style={{ minHeight: '100vh', display: 'flex' }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100vh', position: 'relative' }}>
         {/* App Title in top left */}
         <div style={{ position: 'absolute', top: '1rem', left: '1rem', fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.5px' }}>
-          LocalWhisper
+          Whisper Transcription
+        </div>
+        
+        {/* Options in top right */}
+        <div style={{ position: 'absolute', top: '1rem', right: '1rem' }}>
+          <label style={{ display: 'flex', alignItems: 'center', fontSize: '0.875rem', color: '#6b7280' }}>
+            <input 
+              type="checkbox" 
+              checked={showTimestamps} 
+              onChange={() => setShowTimestamps(!showTimestamps)}
+              style={{ marginRight: '0.5rem' }}
+              disabled={isRecording || isProcessing}
+            />
+            Enable word timestamps
+          </label>
         </div>
         
         {/* Centered Content */}
@@ -326,10 +390,13 @@ function App() {
               <div style={{ padding: '1.25rem', minHeight: '180px' }}>
                 {isProcessing ? (
                   <p style={{ color: '#6b7280', margin: 0 }}>Processing audio...</p>
+                ) : error ? (
+                  <p style={{ color: '#ef4444', margin: 0 }}>{error}</p>
                 ) : transcription ? (
                   <>
                     <p style={{ margin: 0 }}>{transcription}</p>
                     <PerformanceMetrics metrics={performanceMetrics} />
+                    {showTimestamps && <WordTimestamps chunks={wordTimestamps} />}
                   </>
                 ) : (
                   <p style={{ color: '#6b7280', margin: 0 }}>Transcription will appear here...</p>
@@ -340,15 +407,17 @@ function App() {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.75rem', borderTop: '1px solid #e5e7eb', backgroundColor: '#f9fafb', borderBottomLeftRadius: '0.375rem', borderBottomRightRadius: '0.375rem' }}>
                 {/* Status indicator on the left */}
                 <div style={{ fontSize: '0.875rem', color: '#6b7280', paddingLeft: '0.5rem' }}>
-                  {isInitializing ? 
-                    <StatusIndicator status="initializing" text="Initializing..." /> :
+                  {isLoading ? 
+                    <StatusIndicator status="initializing" text="Loading model..." /> :
                   isProcessing ? 
                     <StatusIndicator status="initializing" text="Processing..." /> :
                   isRecording ? 
                     <StatusIndicator status="recording" text="Recording..." /> :
-                  backendInitialized ? 
+                  error ?
+                    <StatusIndicator status="error" text="Error" /> :
+                  modelLoaded ? 
                     <StatusIndicator status="ready" text="Ready" /> :
-                    <StatusIndicator status="not-initialized" text="Not initialized" />
+                    <StatusIndicator status="not-initialized" text="Model not loaded" />
                   }
                 </div>
                 
@@ -359,7 +428,7 @@ function App() {
                 <MicrophoneButton 
                   isRecording={isRecording} 
                   onClick={handleMicrophoneClick}
-                  disabled={isProcessing || isInitializing || (!backendInitialized && !isRecording)}
+                  disabled={isProcessing || isLoading || (!modelLoaded && !isRecording)}
                 />
               </div>
             </div>
